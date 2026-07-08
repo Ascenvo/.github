@@ -1,0 +1,22 @@
+{
+    "name": "Central Workflow",
+    "version": "1.0.0",
+    "description": "Central Workflow file which is extended by all repositories",
+    "main": "server.js",
+    "engines": {
+        "node": ">=22"
+    },
+    "scripts": {
+        "format": "prettier --write .",
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git@github-professional:Ascenvo/.github.git"
+    },
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "prettier": "^3.9.4"
+    }
+}
