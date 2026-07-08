@@ -1,14 +1,19 @@
 {
-    "name": "Central Workflow",
+    "name": "central-workflow",
     "version": "1.0.0",
     "description": "Central Workflow file which is extended by all repositories",
-    "main": "server.js",
+    "private": true,
+    "type": "module",
     "engines": {
         "node": ">=22"
     },
     "scripts": {
+        "lint": "eslint .",
         "format": "prettier --write .",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "format-check": "prettier --check .",
+        "typecheck": "tsc --noEmit",
+        "test": "tsx --test test/*.test.ts",
+        "test:coverage": "tsx --test --experimental-test-coverage test/*.test.ts"
     },
     "repository": {
         "type": "git",
@@ -17,6 +22,13 @@
     "author": "",
     "license": "ISC",
     "devDependencies": {
-        "prettier": "^3.9.4"
+        "@eslint/js": "^9.39.1",
+        "@types/node": "^22.20.1",
+        "eslint": "^9.39.1",
+        "js-yaml": "^5.2.1",
+        "prettier": "^3.9.4",
+        "tsx": "^4.23.0",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.63.0"
     }
 }
