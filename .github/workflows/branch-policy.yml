@@ -1,0 +1,30 @@
+name: branch-policy
+
+on:
+    pull_request:
+        branches: [production]
+    workflow_call:
+
+concurrency:
+    group: branch-policy-${{ github.event.pull_request.number }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    production-source:
+        name: Branch policy
+        runs-on: ubuntu-latest
+        steps:
+            - name: Ensure production only receives develop or release branches
+              env:
+                  HEAD_REF: ${{ github.head_ref }}
+              run: |
+                  if [[ "$HEAD_REF" == "develop" || "$HEAD_REF" == release/* ]]; then
+                      echo "Branch policy passed ($HEAD_REF -> production)."
+                  else
+                      echo "Pull requests into production must come from 'develop' or a 'release/*' branch."
+                      echo "Open your pull request against develop first, then merge develop (or a release branch) into production."
+                      exit 1
+                  fi
