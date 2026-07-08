@@ -17,9 +17,9 @@
     },
     "repository": {
         "type": "git",
-        "url": "git@github-professional:Ascenvo/.github.git"
+        "url": "https://github.com/Ascenvo/.github.git"
     },
-    "author": "",
+    "author": "Developer Riyansh",
     "license": "ISC",
     "devDependencies": {
         "@eslint/js": "^9.39.1",
