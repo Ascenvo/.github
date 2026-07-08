@@ -15,8 +15,8 @@ permissions:
     contents: read
 
 jobs:
-    checks:
-        name: Lint, format, types, tests
+    lint:
+        name: Lint
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v5
@@ -40,10 +40,76 @@ jobs:
             - run: npm run lint --if-present
               if: steps.detect.outputs.exists == 'true'
 
+    format:
+        name: Format
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  submodules: recursive
+                  token: ${{ secrets.WORKFLOW_ACCESS_TOKEN || github.token }}
+
+            - name: Detect Node project
+              id: detect
+              run: echo "exists=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/setup-node@v4
+              if: steps.detect.outputs.exists == 'true'
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - run: npm ci
+              if: steps.detect.outputs.exists == 'true'
+
             - run: npm run format-check --if-present
               if: steps.detect.outputs.exists == 'true'
 
+    types:
+        name: Types
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  submodules: recursive
+                  token: ${{ secrets.WORKFLOW_ACCESS_TOKEN || github.token }}
+
+            - name: Detect Node project
+              id: detect
+              run: echo "exists=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/setup-node@v4
+              if: steps.detect.outputs.exists == 'true'
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - run: npm ci
+              if: steps.detect.outputs.exists == 'true'
+
             - run: npm run typecheck --if-present
+              if: steps.detect.outputs.exists == 'true'
+
+    tests:
+        name: Tests
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  submodules: recursive
+                  token: ${{ secrets.WORKFLOW_ACCESS_TOKEN || github.token }}
+
+            - name: Detect Node project
+              id: detect
+              run: echo "exists=$([ -f package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+            - uses: actions/setup-node@v4
+              if: steps.detect.outputs.exists == 'true'
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - run: npm ci
               if: steps.detect.outputs.exists == 'true'
 
             - run: npm run test --if-present
@@ -61,7 +127,7 @@ jobs:
 
     build:
         name: Build
-        needs: checks
+        needs: [lint, format, types, tests]
         runs-on: ubuntu-latest
         environment:
             name: ${{ github.ref == 'refs/heads/production' && 'production' || 'development' }}
