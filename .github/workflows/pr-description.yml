@@ -35,19 +35,16 @@ jobs:
                   fetch-depth: 0
                   ref: ${{ github.event.pull_request.base.sha }}
 
-            - name: Resolve shared assets ref
-              id: shared-ref
-              env:
-                  WORKFLOW_REF: ${{ github.workflow_ref }}
-              run: echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
-
             # This workflow is called by repos other than Ascenvo/.github, whose checkouts
             # don't contain these files, so fetch the schema/skill from their source of truth.
+            # Note: github.workflow_ref can't be used to self-resolve this workflow's ref here —
+            # in a called reusable workflow it reflects the top-level caller's ref (e.g. a PR
+            # merge ref in the calling repo), not this workflow's own ref.
             - name: Check out shared assets
               uses: actions/checkout@v4
               with:
                   repository: Ascenvo/.github
-                  ref: ${{ steps.shared-ref.outputs.ref }}
+                  ref: production
                   path: .github-shared
                   sparse-checkout: |
                       .github/schemas
