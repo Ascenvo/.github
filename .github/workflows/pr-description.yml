@@ -19,6 +19,7 @@ concurrency:
 permissions:
     contents: read
     pull-requests: write
+    checks: read
 
 jobs:
     generate-description:
@@ -33,6 +34,25 @@ jobs:
               with:
                   fetch-depth: 0
                   ref: ${{ github.event.pull_request.base.sha }}
+
+            - name: Resolve shared assets ref
+              id: shared-ref
+              env:
+                  WORKFLOW_REF: ${{ github.workflow_ref }}
+              run: echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
+
+            # This workflow is called by repos other than Ascenvo/.github, whose checkouts
+            # don't contain these files, so fetch the schema/skill from their source of truth.
+            - name: Check out shared assets
+              uses: actions/checkout@v4
+              with:
+                  repository: Ascenvo/.github
+                  ref: ${{ steps.shared-ref.outputs.ref }}
+                  path: .github-shared
+                  sparse-checkout: |
+                      .github/schemas
+                      .github/skills
+                  sparse-checkout-cone-mode: false
 
             - name: Fetch PR refs
               env:
@@ -129,9 +149,8 @@ jobs:
                       return null;
                     }
 
-                    const skill = fs.existsSync('.github/skills/pr-description-updater/SKILL.md')
-                      ? fs.readFileSync('.github/skills/pr-description-updater/SKILL.md', enc)
-                      : '';
+                    const skillPath = '.github-shared/.github/skills/pr-description-updater/SKILL.md';
+                    const skill = fs.existsSync(skillPath) ? fs.readFileSync(skillPath, enc) : '';
 
                     const prompt = [
                       skill,
@@ -148,7 +167,7 @@ jobs:
                       '- If there are no notes, use `None.` under Notes.',
                       '',
                       '=== Schema ===',
-                      fs.readFileSync('.github/schemas/pr-description-body.schema.json', enc),
+                      fs.readFileSync('.github-shared/.github/schemas/pr-description-body.schema.json', enc),
                       '=== PR metadata ===',
                       fs.readFileSync(dir + '/metadata.json', enc),
                       '=== CI/check status ===',
@@ -196,7 +215,16 @@ jobs:
                       req.end();
                     });
 
-                    let text = response.choices[0].message.content.trim();
+                    const content = response.choices && response.choices[0] && response.choices[0].message
+                      ? response.choices[0].message.content
+                      : null;
+
+                    if (typeof content !== 'string') {
+                      console.error('Model response had no message content. Raw response:', JSON.stringify(response, null, 2));
+                      throw new Error('Model did not return message content (see raw response above).');
+                    }
+
+                    let text = content.trim();
                     text = text.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
 
                     let output;
