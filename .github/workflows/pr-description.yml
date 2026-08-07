@@ -2,7 +2,7 @@ name: pr-description
 
 on:
     pull_request:
-        types: [opened, reopened, synchronize]
+        types: [opened, reopened]
     workflow_call:
         secrets:
             API_KEY:
@@ -11,6 +11,7 @@ on:
                 required: true
             MODEL:
                 required: true
+    workflow_dispatch:
 
 concurrency:
     group: pr-description-${{ github.event.pull_request.number }}
@@ -22,29 +23,44 @@ permissions:
     checks: read
 
 jobs:
-    generate-description:
-        name: Generate PR description
+    # ===== SELF-HOSTED RUNNER (Primary) =====
+    generate-description-local:
+        name: Generate PR description (Local)
         # Fork PRs don't get repo secrets on the `pull_request` event (this repo is public),
         # so the API call below would just fail with a 401. Skip them instead of burning a red X.
         if: github.event.pull_request.head.repo.full_name == github.repository
-        runs-on: ubuntu-latest
+        runs-on: [self-hosted, macos-pr]
+        timeout-minutes: 30
+        continue-on-error: true
+        outputs:
+            success: ${{ job.status == 'success' }}
+        env:
+            GIT_CREDENTIALS: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
         steps:
             - name: Check out base repository
               uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  clean: true
+                  set-safe-directory: false
                   ref: ${{ github.event.pull_request.base.sha }}
+                  token: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
+
+            - name: Resolve shared assets ref
+              id: shared-ref
+              env:
+                  WORKFLOW_REF: ${{ github.workflow_ref }}
+              run: echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
 
             # This workflow is called by repos other than Ascenvo/.github, whose checkouts
             # don't contain these files, so fetch the schema/skill from their source of truth.
-            # Note: github.workflow_ref can't be used to self-resolve this workflow's ref here —
-            # in a called reusable workflow it reflects the top-level caller's ref (e.g. a PR
-            # merge ref in the calling repo), not this workflow's own ref.
             - name: Check out shared assets
               uses: actions/checkout@v4
               with:
                   repository: Ascenvo/.github
-                  ref: production
+                  ref: ${{ steps.shared-ref.outputs.ref }}
+                  clean: true
+                  set-safe-directory: false
                   path: .github-shared
                   sparse-checkout: |
                       .github/schemas
@@ -267,3 +283,270 @@ jobs:
             - name: PR description already current
               if: steps.compare.outputs.changed == 'false'
               run: echo "Generated PR body matches the existing description."
+
+            - name: ⏱️ Job timeout check
+              if: always()
+              run: |
+                  if [ "${{ job.status }}" = "cancelled" ]; then
+                    echo "❌ Job was cancelled due to timeout (30 minutes exceeded)"
+                    exit 1
+                  fi
+
+    # ===== GITHUB-HOSTED FALLBACK (Backup) =====
+    generate-description-github:
+        name: Generate PR description (GitHub)
+        needs: generate-description-local
+        if: ${{ needs.generate-description-local.outputs.success != 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            GIT_CREDENTIALS: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
+        steps:
+            - name: Check out base repository
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ github.event.pull_request.base.sha }}
+                  token: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
+
+            - name: Resolve shared assets ref
+              id: shared-ref
+              env:
+                  WORKFLOW_REF: ${{ github.workflow_ref }}
+              run: echo "ref=${WORKFLOW_REF##*@}" >> "${GITHUB_OUTPUT}"
+
+            - name: Check out shared assets
+              uses: actions/checkout@v4
+              with:
+                  repository: Ascenvo/.github
+                  ref: ${{ steps.shared-ref.outputs.ref }}
+                  path: .github-shared
+                  sparse-checkout: |
+                      .github/schemas
+                      .github/skills
+                  sparse-checkout-cone-mode: false
+
+            - name: Fetch PR refs
+              env:
+                  BASE_REF: ${{ github.event.pull_request.base.ref }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+              run: |
+                  git fetch --no-tags origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+                  git fetch --no-tags origin "pull/${PR_NUMBER}/head:refs/remotes/origin/pr-${PR_NUMBER}-head"
+
+            - name: Collect PR context
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  BASE_REF: ${{ github.event.pull_request.base.ref }}
+              run: |
+                  mkdir -p "${RUNNER_TEMP}/pr-description"
+
+                  gh pr view "${PR_NUMBER}" \
+                      --json number,url,title,body,baseRefName,headRefName,commits,files \
+                      > "${RUNNER_TEMP}/pr-description/metadata.json"
+
+                  gh pr checks "${PR_NUMBER}" \
+                      --json name,state,bucket,completedAt,link \
+                      > "${RUNNER_TEMP}/pr-description/checks.json" || echo "[]" > "${RUNNER_TEMP}/pr-description/checks.json"
+
+                  git log --pretty=format:'%H %s' "origin/${BASE_REF}...refs/remotes/origin/pr-${PR_NUMBER}-head" \
+                      > "${RUNNER_TEMP}/pr-description/commits.txt"
+
+                  git diff --name-status "origin/${BASE_REF}...refs/remotes/origin/pr-${PR_NUMBER}-head" \
+                      > "${RUNNER_TEMP}/pr-description/files.txt"
+
+                  git diff --stat "origin/${BASE_REF}...refs/remotes/origin/pr-${PR_NUMBER}-head" \
+                      > "${RUNNER_TEMP}/pr-description/diff-stat.txt"
+
+                  git diff --find-renames --unified=3 "origin/${BASE_REF}...refs/remotes/origin/pr-${PR_NUMBER}-head" \
+                      | head -c 30000 \
+                      > "${RUNNER_TEMP}/pr-description/diff.patch"
+
+            - name: Generate PR description
+              id: codex
+              env:
+                  API_KEY: ${{ secrets.API_KEY }}
+                  API_BASE_URL: ${{ secrets.API_BASE_URL }}
+                  MODEL: ${{ secrets.MODEL }}
+              run: |
+                  node << 'EOF'
+                  const https = require('https');
+                  const http = require('http');
+                  const fs = require('fs');
+                  const { URL } = require('url');
+
+                  (async () => {
+                    const dir = process.env.RUNNER_TEMP + '/pr-description';
+                    const enc = 'utf8';
+
+                    function extractJsonObject(text) {
+                      const start = text.indexOf('{');
+                      if (start === -1) return null;
+
+                      let depth = 0;
+                      let inString = false;
+                      let escaped = false;
+
+                      for (let i = start; i < text.length; i++) {
+                        const ch = text[i];
+
+                        if (inString) {
+                          if (escaped) {
+                            escaped = false;
+                          } else if (ch === '\\') {
+                            escaped = true;
+                          } else if (ch === '"') {
+                            inString = false;
+                          }
+                          continue;
+                        }
+
+                        if (ch === '"') {
+                          inString = true;
+                          continue;
+                        }
+
+                        if (ch === '{') {
+                          depth++;
+                          continue;
+                        }
+
+                        if (ch === '}') {
+                          depth--;
+                          if (depth === 0) return text.slice(start, i + 1);
+                        }
+                      }
+
+                      return null;
+                    }
+
+                    const skillPath = '.github-shared/.github/skills/pr-description-updater/SKILL.md';
+                    const skill = fs.existsSync(skillPath) ? fs.readFileSync(skillPath, enc) : '';
+
+                    const prompt = [
+                      skill,
+                      'Generate a GitHub pull request description from the artifacts below.',
+                      'Return ONLY valid JSON matching the schema. No markdown fences or explanation.',
+                      '',
+                      'Requirements:',
+                      '- The JSON `body` field must contain the final markdown PR description.',
+                      '- Use the section structure defined in the skill.',
+                      '- Preserve important existing manual PR body content.',
+                      '- Do not invent testing results.',
+                      '- Do not mark checklist items checked unless artifacts provide clear evidence.',
+                      '- If there is no testing evidence, use `Not run.` under Testing.',
+                      '- If there are no notes, use `None.` under Notes.',
+                      '',
+                      '=== Schema ===',
+                      fs.readFileSync('.github-shared/.github/schemas/pr-description-body.schema.json', enc),
+                      '=== PR metadata ===',
+                      fs.readFileSync(dir + '/metadata.json', enc),
+                      '=== CI/check status ===',
+                      fs.readFileSync(dir + '/checks.json', enc),
+                      '=== Commit list ===',
+                      fs.readFileSync(dir + '/commits.txt', enc),
+                      '=== Changed files ===',
+                      fs.readFileSync(dir + '/files.txt', enc),
+                      '=== Diff stat ===',
+                      fs.readFileSync(dir + '/diff-stat.txt', enc),
+                      '=== Patch diff ===',
+                      fs.readFileSync(dir + '/diff.patch', enc),
+                    ].join('\n');
+
+                    const baseUrl = new URL(process.env.API_BASE_URL);
+                    const reqBody = JSON.stringify({
+                      model: process.env.MODEL,
+                      messages: [{ role: 'user', content: prompt }],
+                      max_tokens: 4096,
+                    });
+
+                    const response = await new Promise((resolve, reject) => {
+                      const lib = baseUrl.protocol === 'https:' ? https : http;
+                      const req = lib.request({
+                        hostname: baseUrl.hostname,
+                        port: baseUrl.port || undefined,
+                        path: baseUrl.pathname.replace(/\/$/, '') + '/chat/completions',
+                        method: 'POST',
+                        headers: {
+                          'content-type': 'application/json',
+                          'content-length': Buffer.byteLength(reqBody),
+                          'authorization': `Bearer ${process.env.API_KEY}`,
+                        },
+                      }, res => {
+                        let data = '';
+                        res.on('data', c => data += c);
+                        res.on('end', () => {
+                          if (res.statusCode !== 200)
+                            reject(new Error('API ' + res.statusCode + ': ' + data));
+                          else resolve(JSON.parse(data));
+                        });
+                      });
+                      req.on('error', reject);
+                      req.write(reqBody);
+                      req.end();
+                    });
+
+                    const content = response.choices && response.choices[0] && response.choices[0].message
+                      ? response.choices[0].message.content
+                      : null;
+
+                    if (typeof content !== 'string') {
+                      console.error('Model response had no message content. Raw response:', JSON.stringify(response, null, 2));
+                      throw new Error('Model did not return message content (see raw response above).');
+                    }
+
+                    let text = content.trim();
+                    text = text.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+
+                    let output;
+                    try {
+                      output = JSON.parse(text);
+                    } catch (error) {
+                      const extracted = extractJsonObject(text);
+                      if (!extracted) throw error;
+                      output = JSON.parse(extracted);
+                    }
+
+                    if (!output || typeof output.body !== 'string') {
+                      throw new Error('Model output did not match the expected JSON schema.');
+                    }
+
+                    fs.writeFileSync(dir + '/codex-output.json', JSON.stringify(output, null, 2), 'utf8');
+                    console.log('PR description generated successfully.');
+                  })().catch(err => { console.error(err.message); process.exit(1); });
+                  EOF
+
+            - name: Store generated PR body
+              run: |
+                  node -e "const fs = require('fs'); const output = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/pr-description/codex-output.json', 'utf8')); fs.writeFileSync(process.env.RUNNER_TEMP + '/pr-description/body.md', output.body, 'utf8');"
+
+            - name: Compare PR body
+              id: compare
+              run: |
+                  node -e "const fs = require('fs'); const metadata = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/pr-description/metadata.json', 'utf8')); fs.writeFileSync(process.env.RUNNER_TEMP + '/pr-description/existing-body.md', metadata.body || '', 'utf8');"
+
+                  if cmp -s "${RUNNER_TEMP}/pr-description/existing-body.md" "${RUNNER_TEMP}/pr-description/body.md"; then
+                      echo "changed=false" >> "${GITHUB_OUTPUT}"
+                  else
+                      echo "changed=true" >> "${GITHUB_OUTPUT}"
+                  fi
+
+            - name: Update PR description
+              if: steps.compare.outputs.changed == 'true'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+              run: gh pr edit "${PR_NUMBER}" --body-file "${RUNNER_TEMP}/pr-description/body.md"
+
+            - name: PR description already current
+              if: steps.compare.outputs.changed == 'false'
+              run: echo "✅ Generated PR body matches the existing description (GitHub fallback)."
+
+            - name: ⏱️ Job timeout check
+              if: always()
+              run: |
+                  if [ "${{ job.status }}" = "cancelled" ]; then
+                    echo "❌ Job was cancelled due to timeout (30 minutes exceeded)"
+                    exit 1
+                  fi

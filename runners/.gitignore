@@ -1,0 +1,21 @@
+# GitHub Actions Self-Hosted Runners Setup
+# This folder contains setup scripts and documentation
+# DO NOT COMMIT the runner directories themselves to git
+
+# Local runner directories (created by setup.sh)
+/runner-*/
+/logs/
+*.log
+
+# Git shouldn't track these
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Keep only the setup scripts and documentation
+# Scripts to commit:
+# - setup.sh
+# - README.md
+# - quick-start.md
+# - .gitignore (this file)
