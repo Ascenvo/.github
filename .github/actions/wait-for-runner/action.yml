@@ -1,0 +1,65 @@
+name: "Cancel job if not picked up"
+description: >
+    Watches one or more jobs in the current workflow run and cancels any that
+    are still "queued" once the given timeout elapses, so no self-hosted
+    runner being online leaves the workflow stuck instead of falling back.
+inputs:
+    job-names:
+        description: "Newline-separated list of job `name:` values to watch"
+        required: true
+    timeout-minutes:
+        description: "Minutes to wait for a runner to pick up each job before cancelling it"
+        required: false
+        default: "30"
+    github-token:
+        description: "Token with actions:write permission on this repo"
+        required: true
+runs:
+    using: "composite"
+    steps:
+        - name: Cancel jobs still queued after timeout
+          shell: bash
+          env:
+              GH_TOKEN: ${{ inputs.github-token }}
+              JOB_NAMES: ${{ inputs.job-names }}
+              TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+              REPO: ${{ github.repository }}
+              RUN_ID: ${{ github.run_id }}
+          run: |
+              set -euo pipefail
+
+              mapfile -t NAMES <<< "$JOB_NAMES"
+              deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+              declare -A resolved=()
+
+              fetch_jobs() {
+                gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs" --paginate -q '.jobs'
+              }
+
+              while :; do
+                jobs_json=$(fetch_jobs)
+                pending=0
+                for name in "${NAMES[@]}"; do
+                  [[ -z "$name" || -n "${resolved[$name]:-}" ]] && continue
+                  status=$(echo "$jobs_json" | jq -r --arg n "$name" 'map(select(.name==$n)) | .[0].status // empty')
+                  if [[ -n "$status" && "$status" != "queued" ]]; then
+                    echo "✅ '$name' picked up by a runner (status=$status)"
+                    resolved[$name]=1
+                  else
+                    pending=$((pending + 1))
+                  fi
+                done
+                [[ $pending -eq 0 ]] && break
+                [[ $(date +%s) -ge $deadline ]] && break
+                sleep 20
+              done
+
+              jobs_json=$(fetch_jobs)
+              for name in "${NAMES[@]}"; do
+                [[ -z "$name" || -n "${resolved[$name]:-}" ]] && continue
+                job_id=$(echo "$jobs_json" | jq -r --arg n "$name" 'map(select(.name==$n)) | .[0].id // empty')
+                if [[ -n "$job_id" ]]; then
+                  echo "⏱️ '$name' was not picked up by a runner within ${TIMEOUT_MINUTES}m — cancelling it so the fallback job can run"
+                  gh api -X POST "repos/${REPO}/actions/jobs/${job_id}/cancel" || true
+                fi
+              done

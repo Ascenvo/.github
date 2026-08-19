@@ -14,8 +14,26 @@ concurrency:
 
 permissions:
     contents: read
+    actions: write
 
 jobs:
+    # ===== WATCHDOG: cancel Phase 1 local checks if no runner picks them up in time =====
+    watch-local-checks:
+        name: Local checks pickup watchdog
+        runs-on: ubuntu-latest
+        timeout-minutes: 32
+        steps:
+            - name: Cancel local checks if not picked up within 30 minutes
+              uses: Ascenvo/.github/.github/actions/wait-for-runner@main
+              with:
+                  job-names: |
+                      Lint (Local)
+                      Format (Local)
+                      Types (Local)
+                      Tests (Local)
+                  timeout-minutes: "30"
+                  github-token: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
+
     # ===== PHASE 1: RUN ALL LOCAL CHECKS IN PARALLEL =====
     lint-local:
         name: Lint (Local)
@@ -178,6 +196,21 @@ jobs:
                     echo "❌ Job was cancelled due to timeout (30 minutes exceeded)"
                     exit 1
                   fi
+
+    # ===== WATCHDOG: cancel local build if no runner picks it up in time =====
+    watch-local-build:
+        name: Local build pickup watchdog
+        needs: [lint-local, format-local, types-local, tests-local]
+        if: ${{ needs.lint-local.outputs.success == 'true' && needs.format-local.outputs.success == 'true' && needs.types-local.outputs.success == 'true' && needs.tests-local.outputs.success == 'true' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 32
+        steps:
+            - name: Cancel local build if not picked up within 30 minutes
+              uses: Ascenvo/.github/.github/actions/wait-for-runner@main
+              with:
+                  job-names: "Build (Local)"
+                  timeout-minutes: "30"
+                  github-token: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
 
     # ===== PHASE 2A: IF ALL LOCAL CHECKS PASS → RUN LOCAL BUILD =====
     build-local:

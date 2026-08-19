@@ -21,8 +21,23 @@ permissions:
     contents: read
     pull-requests: write
     checks: read
+    actions: write
 
 jobs:
+    # ===== WATCHDOG: cancel the local job if no runner picks it up in time =====
+    watch-generate-description-local:
+        name: Generate PR description (Local pickup watchdog)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        runs-on: ubuntu-latest
+        timeout-minutes: 32
+        steps:
+            - name: Cancel local job if not picked up within 30 minutes
+              uses: Ascenvo/.github/.github/actions/wait-for-runner@main
+              with:
+                  job-names: "Generate PR description (Local)"
+                  timeout-minutes: "30"
+                  github-token: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
+
     # ===== SELF-HOSTED RUNNER (Primary) =====
     generate-description-local:
         name: Generate PR description (Local)
