@@ -14,9 +14,46 @@ permissions:
     packages: write
 
 jobs:
+    # ===== GATE: skip everything below if this version is already published =====
+    check-version:
+        name: Check version
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        outputs:
+            should-publish: ${{ steps.check.outputs.should-publish }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  set-safe-directory: false
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  registry-url: https://npm.pkg.github.com
+                  scope: "@ascenvo"
+
+            - name: Compare local version against the published version
+              id: check
+              env:
+                  NODE_AUTH_TOKEN: ${{ github.token }}
+              run: |
+                  NAME=$(node -p "require('./package.json').name")
+                  LOCAL_VERSION=$(node -p "require('./package.json').version")
+                  PUBLISHED_VERSION=$(npm view "$NAME" version 2>/dev/null || echo "")
+                  echo "local version: $LOCAL_VERSION"
+                  echo "published version: ${PUBLISHED_VERSION:-<none>}"
+                  if [ "$LOCAL_VERSION" = "$PUBLISHED_VERSION" ]; then
+                      echo "Version unchanged — nothing to publish."
+                      echo "should-publish=false" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "should-publish=true" >> "$GITHUB_OUTPUT"
+                  fi
+
     # ===== WATCHDOG: cancel local publish if no runner picks it up in time =====
     watch-local-publish:
         name: Local publish pickup watchdog
+        needs: [check-version]
+        if: needs.check-version.outputs.should-publish == 'true'
         runs-on: ubuntu-latest
         timeout-minutes: 32
         steps:
@@ -30,6 +67,8 @@ jobs:
     # ===== PHASE 1: TRY PUBLISHING FROM THE LOCAL SELF-HOSTED RUNNER =====
     publish-local:
         name: Publish (Local)
+        needs: [check-version]
+        if: needs.check-version.outputs.should-publish == 'true'
         runs-on: [self-hosted, macos-ci]
         timeout-minutes: 30
         continue-on-error: true
@@ -58,8 +97,8 @@ jobs:
     # picked up but didn't finish within 30 minutes) → FALL BACK TO GITHUB =====
     publish-github:
         name: Publish (GitHub Fallback)
-        needs: [publish-local]
-        if: ${{ needs.publish-local.outputs.success != 'true' }}
+        needs: [check-version, publish-local]
+        if: ${{ needs.check-version.outputs.should-publish == 'true' && needs.publish-local.outputs.success != 'true' }}
         runs-on: ubuntu-latest
         timeout-minutes: 30
         steps:
