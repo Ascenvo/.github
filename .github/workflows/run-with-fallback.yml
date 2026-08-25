@@ -1,0 +1,75 @@
+name: run-with-fallback
+
+on:
+    workflow_call:
+        inputs:
+            command:
+                description: "Shell command to run against the checked-out repo"
+                required: true
+                type: string
+            job-label:
+                description: >
+                    Short label for this run, e.g. "Checks" / "Tests" / "Build".
+                    Produces jobs named "<job-label> (Local)" / "<job-label> (GitHub
+                    Fallback)" — the watchdog matches on this bare label via a
+                    suffix match, so it works no matter how deeply this workflow
+                    ends up nested behind other callers.
+                required: true
+                type: string
+            node-version:
+                required: false
+                type: string
+                default: "22"
+
+permissions:
+    contents: read
+    actions: write
+    packages: read
+
+jobs:
+    # ===== WATCHDOG: cancel the local job if no runner picks it up in time =====
+    watch-local:
+        name: ${{ inputs.job-label }} pickup watchdog
+        runs-on: ubuntu-latest
+        timeout-minutes: 32
+        steps:
+            - name: Cancel local job if not picked up within 30 minutes
+              uses: Ascenvo/.github/.github/actions/wait-for-runner@main
+              with:
+                  job-names: "${{ inputs.job-label }} (Local)"
+                  timeout-minutes: "30"
+                  github-token: ${{ github.token }}
+
+    # ===== PHASE 1: TRY RUNNING FROM THE LOCAL SELF-HOSTED RUNNER =====
+    run-local:
+        name: ${{ inputs.job-label }} (Local)
+        runs-on: [self-hosted, macos-ci]
+        timeout-minutes: 30
+        continue-on-error: true
+        outputs:
+            success: ${{ job.status == 'success' }}
+        steps:
+            - uses: Ascenvo/.github/.github/actions/setup-npm-registry@main
+              with:
+                  node-version: ${{ inputs.node-version }}
+
+            - run: ${{ inputs.command }}
+              env:
+                  NODE_AUTH_TOKEN: ${{ github.token }}
+
+    # ===== PHASE 2: IF LOCAL DIDN'T SUCCEED (not picked up in time, or picked
+    # up but didn't finish within 30 minutes) → FALL BACK TO GITHUB =====
+    run-github:
+        name: ${{ inputs.job-label }} (GitHub Fallback)
+        needs: [run-local]
+        if: ${{ needs.run-local.outputs.success != 'true' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: Ascenvo/.github/.github/actions/setup-npm-registry@main
+              with:
+                  node-version: ${{ inputs.node-version }}
+
+            - run: ${{ inputs.command }}
+              env:
+                  NODE_AUTH_TOKEN: ${{ github.token }}

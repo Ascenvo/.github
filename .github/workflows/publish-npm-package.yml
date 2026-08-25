@@ -7,16 +7,6 @@ on:
                 required: false
                 type: string
                 default: "22"
-            caller-job-name:
-                description: >
-                    The job id/name used in the CALLING workflow's `jobs.<id>.uses:`
-                    block that invokes this reusable workflow (e.g. "publish").
-                    GitHub prefixes every job inside a called reusable workflow with
-                    this name in the Actions API/UI ("<caller-job-name> / <this job's
-                    name>"), so the watchdog needs it to match the right job — there's
-                    no context variable that exposes this automatically.
-                required: true
-                type: string
 
 permissions:
     contents: read
@@ -32,15 +22,9 @@ jobs:
         outputs:
             should-publish: ${{ steps.check.outputs.should-publish }}
         steps:
-            - uses: actions/checkout@v4
-              with:
-                  set-safe-directory: false
-
-            - uses: actions/setup-node@v4
+            - uses: Ascenvo/.github/.github/actions/setup-npm-registry@main
               with:
                   node-version: ${{ inputs.node-version }}
-                  registry-url: https://npm.pkg.github.com
-                  scope: "@ascenvo"
 
             - name: Compare local version against the published version
               id: check
@@ -59,73 +43,17 @@ jobs:
                       echo "should-publish=true" >> "$GITHUB_OUTPUT"
                   fi
 
-    # ===== WATCHDOG: cancel local publish if no runner picks it up in time =====
-    watch-local-publish:
-        name: Local publish pickup watchdog
+    # ===== PUBLISH: local-runner-with-GitHub-fallback, via the shared base =====
+    publish:
+        name: Publish
         needs: [check-version]
         if: needs.check-version.outputs.should-publish == 'true'
-        runs-on: ubuntu-latest
-        timeout-minutes: 32
-        steps:
-            - name: Cancel local publish if not picked up within 30 minutes
-              uses: Ascenvo/.github/.github/actions/wait-for-runner@main
-              with:
-                  job-names: "${{ inputs.caller-job-name }} / Publish (Local)"
-                  timeout-minutes: "30"
-                  github-token: ${{ github.token }}
-
-    # ===== PHASE 1: TRY PUBLISHING FROM THE LOCAL SELF-HOSTED RUNNER =====
-    publish-local:
-        name: Publish (Local)
-        needs: [check-version]
-        if: needs.check-version.outputs.should-publish == 'true'
-        runs-on: [self-hosted, macos-ci]
-        timeout-minutes: 30
-        continue-on-error: true
-        outputs:
-            success: ${{ job.status == 'success' }}
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  set-safe-directory: false
-
-            - uses: actions/setup-node@v4
-              with:
-                  node-version: ${{ inputs.node-version }}
-                  registry-url: https://npm.pkg.github.com
-                  scope: "@ascenvo"
-
-            - run: npm ci
-              env:
-                  NODE_AUTH_TOKEN: ${{ github.token }}
-
-            - run: npm publish
-              env:
-                  NODE_AUTH_TOKEN: ${{ github.token }}
-
-    # ===== PHASE 2: IF LOCAL PUBLISH DIDN'T SUCCEED (not picked up in time, or
-    # picked up but didn't finish within 30 minutes) → FALL BACK TO GITHUB =====
-    publish-github:
-        name: Publish (GitHub Fallback)
-        needs: [check-version, publish-local]
-        if: ${{ needs.check-version.outputs.should-publish == 'true' && needs.publish-local.outputs.success != 'true' }}
-        runs-on: ubuntu-latest
-        timeout-minutes: 30
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  set-safe-directory: false
-
-            - uses: actions/setup-node@v4
-              with:
-                  node-version: ${{ inputs.node-version }}
-                  registry-url: https://npm.pkg.github.com
-                  scope: "@ascenvo"
-
-            - run: npm ci
-              env:
-                  NODE_AUTH_TOKEN: ${{ github.token }}
-
-            - run: npm publish
-              env:
-                  NODE_AUTH_TOKEN: ${{ github.token }}
+        uses: Ascenvo/.github/.github/workflows/run-with-fallback.yml@main
+        with:
+            command: npm publish
+            job-label: Publish
+            node-version: ${{ inputs.node-version }}
+        permissions:
+            contents: read
+            actions: write
+            packages: write

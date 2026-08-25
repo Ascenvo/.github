@@ -41,7 +41,7 @@ runs:
                 pending=0
                 for name in "${NAMES[@]}"; do
                   [[ -z "$name" || -n "${resolved[$name]:-}" ]] && continue
-                  status=$(echo "$jobs_json" | jq -r --arg n "$name" 'map(select(.name==$n)) | .[0].status // empty')
+                  status=$(echo "$jobs_json" | jq -r --arg n "$name" 'map(select(.name | endswith($n))) | .[0].status // empty')
                   if [[ -n "$status" && "$status" != "queued" ]]; then
                     echo "✅ '$name' picked up by a runner (status=$status)"
                     resolved[$name]=1
@@ -57,7 +57,7 @@ runs:
               jobs_json=$(fetch_jobs)
               for name in "${NAMES[@]}"; do
                 [[ -z "$name" || -n "${resolved[$name]:-}" ]] && continue
-                job_id=$(echo "$jobs_json" | jq -r --arg n "$name" 'map(select(.name==$n)) | .[0].id // empty')
+                job_id=$(echo "$jobs_json" | jq -r --arg n "$name" 'map(select(.name | endswith($n))) | .[0].id // empty')
                 if [[ -n "$job_id" ]]; then
                   echo "⏱️ '$name' was not picked up by a runner within ${TIMEOUT_MINUTES}m — cancelling it so the fallback job can run"
                   gh api -X POST "repos/${REPO}/actions/jobs/${job_id}/cancel" || true
