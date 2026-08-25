@@ -1,0 +1,37 @@
+name: publish-npm-package
+
+on:
+    workflow_call:
+        inputs:
+            node-version:
+                required: false
+                type: string
+                default: "22"
+        secrets:
+            ASCENVO_WORKFLOW_TOKEN:
+                required: false
+
+jobs:
+    publish:
+        name: Publish
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+            packages: write
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  set-safe-directory: false
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  registry-url: https://npm.pkg.github.com
+                  scope: "@ascenvo"
+
+            - run: npm ci
+
+            - run: npm publish
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
