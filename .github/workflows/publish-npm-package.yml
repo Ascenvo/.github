@@ -7,18 +7,34 @@ on:
                 required: false
                 type: string
                 default: "22"
-        secrets:
-            ASCENVO_WORKFLOW_TOKEN:
-                required: false
+
+permissions:
+    contents: read
+    actions: write
+    packages: write
 
 jobs:
-    publish:
-        name: Publish
+    # ===== WATCHDOG: cancel local publish if no runner picks it up in time =====
+    watch-local-publish:
+        name: Local publish pickup watchdog
         runs-on: ubuntu-latest
-        timeout-minutes: 15
-        permissions:
-            contents: read
-            packages: write
+        timeout-minutes: 32
+        steps:
+            - name: Cancel local publish if not picked up within 30 minutes
+              uses: Ascenvo/.github/.github/actions/wait-for-runner@main
+              with:
+                  job-names: "Publish (Local)"
+                  timeout-minutes: "30"
+                  github-token: ${{ github.token }}
+
+    # ===== PHASE 1: TRY PUBLISHING FROM THE LOCAL SELF-HOSTED RUNNER =====
+    publish-local:
+        name: Publish (Local)
+        runs-on: [self-hosted, macos-ci]
+        timeout-minutes: 30
+        continue-on-error: true
+        outputs:
+            success: ${{ job.status == 'success' }}
         steps:
             - uses: actions/checkout@v4
               with:
@@ -31,7 +47,36 @@ jobs:
                   scope: "@ascenvo"
 
             - run: npm ci
+              env:
+                  NODE_AUTH_TOKEN: ${{ github.token }}
 
             - run: npm publish
               env:
-                  NODE_AUTH_TOKEN: ${{ secrets.ASCENVO_WORKFLOW_TOKEN || github.token }}
+                  NODE_AUTH_TOKEN: ${{ github.token }}
+
+    # ===== PHASE 2: IF LOCAL PUBLISH DIDN'T SUCCEED (not picked up in time, or
+    # picked up but didn't finish within 30 minutes) → FALL BACK TO GITHUB =====
+    publish-github:
+        name: Publish (GitHub Fallback)
+        needs: [publish-local]
+        if: ${{ needs.publish-local.outputs.success != 'true' }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  set-safe-directory: false
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ inputs.node-version }}
+                  registry-url: https://npm.pkg.github.com
+                  scope: "@ascenvo"
+
+            - run: npm ci
+              env:
+                  NODE_AUTH_TOKEN: ${{ github.token }}
+
+            - run: npm publish
+              env:
+                  NODE_AUTH_TOKEN: ${{ github.token }}
